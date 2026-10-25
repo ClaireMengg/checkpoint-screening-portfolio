@@ -1,0 +1,2229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Checkpoint Terminal — Map V3</title>
+
+  <style>
+    html, body {
+      width: 100%; height: 100%; margin: 0; overflow: hidden;
+      background: #020309;
+      font-family: Arial, sans-serif;
+    }
+    canvas { display: block; }
+
+    #blocker {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.66);
+      color: white; text-align: center; cursor: pointer;
+    }
+    #blocker.hidden { display: none; }
+    #instructions {
+      padding: 26px 34px; border-radius: 12px;
+      background: rgba(12, 15, 24, 0.9);
+      backdrop-filter: blur(6px);
+      font-size: 19px; line-height: 1.7;
+    }
+    #instructions small { color: #d4d4d4; font-size: 13px; }
+
+    /* Shown once, before anything else, if no condition is stored yet
+       for this participant. Sits ABOVE #blocker (z-index 11 vs 10) so
+       the player can't start walking around until they've picked one. */
+    #condition-select {
+      position: fixed; inset: 0; z-index: 11;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 24px;
+      background: rgba(2, 3, 9, 0.95);
+      color: white; text-align: center;
+      font-family: 'Courier New', monospace;
+    }
+    #condition-select.visible { display: flex; }
+    #condition-select h2 {
+      font-size: 18px; letter-spacing: 3px; margin: 0; color: #6fd6e8;
+    }
+    #condition-select .mode-buttons { display: flex; gap: 20px; }
+    #condition-select button {
+      padding: 16px 34px; font-size: 13px; letter-spacing: 2px;
+      background: rgba(8, 18, 28, 0.9); border: 1px solid #6fd6e8; color: #6fd6e8;
+      cursor: pointer; font-family: inherit; transition: filter 0.1s ease;
+    }
+    #condition-select button:hover { filter: brightness(1.35); }
+
+    #crosshair {
+      position: fixed; left: 50%; top: 50%;
+      width: 6px; height: 6px; margin-left: -3px; margin-top: -3px;
+      z-index: 5; border-radius: 50%;
+      background: rgba(255, 255, 255, 0.92);
+      pointer-events: none;
+    }
+
+    #status {
+      position: fixed; left: 12px; bottom: 12px; z-index: 5;
+      padding: 9px 11px; border-radius: 7px;
+      background: rgba(0, 0, 0, 0.58);
+      color: white; font-family: monospace; font-size: 12px;
+      line-height: 1.5; white-space: pre-line; pointer-events: none;
+    }
+
+    /* Playtest-only reset button — fine while testing is just the team
+       screen-sharing; remove/hide before real uncontrolled data collection
+       so participants can't hit it.
+       z-index 12 puts it ABOVE #blocker (10) and #condition-select (11) --
+       otherwise those full-screen overlays sit on top while unlocked and
+       swallow the click before it ever reaches this button.
+       It's also only meant to be used while unlocked: under Pointer Lock
+       there's no real moving cursor, so a fixed-position button can't
+       reliably receive a click anyway -- press ESC first, then reset. */
+    #dev-reset-btn {
+      position: fixed; bottom: 12px; right: 12px; z-index: 12;
+      font-family: monospace; font-size: 11px; padding: 6px 10px;
+      background: rgba(0, 0, 0, 0.6); color: #6fd6e8; border: 1px solid #6fd6e8;
+      cursor: pointer;
+    }
+    #dev-reset-btn:hover { filter: brightness(1.35); }
+    #dev-reset-btn.locked-disabled {
+      opacity: 0.35; cursor: default; pointer-events: none;
+    }
+
+    /* ---------------- Checkpoint HUD --------------- */
+    :root {
+      --panel-bg: rgba(8, 18, 28, 0.75);
+      --cyan: #6fd6e8;
+      --cyan-dim: #3a6b78;
+      --orange: #e8845a;
+      --text-dim: #7d95a0;
+      --line: rgba(111, 214, 232, 0.25);
+    }
+    .hud-label { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--cyan); }
+
+    #walk-prompt {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); z-index: 4;
+      font-size: 12px; letter-spacing: 2px; color: var(--text-dim); font-family: 'Courier New', monospace;
+    }
+    #walk-prompt.hidden { display: none; }
+    /* PRE/POST attitude survey (reused for both phases) and the static
+       mission briefing. Both sit ABOVE #blocker (10), #condition-select
+       (11), and #dev-reset-btn (12) at z-index 13 so they gate the start
+       of play during first-time onboarding. Both start hidden (no
+       .visible) so a returning participant who already picked a condition
+       never sees them. Styled to match #condition-select: dark bg, cyan
+       accents, monospace; scrollable if taller than the viewport. */
+    #survey-overlay, #directions-overlay {
+      position: fixed; inset: 0; z-index: 13;
+      display: none; flex-direction: column; align-items: center; justify-content: flex-start;
+      gap: 18px; padding: 40px 20px; box-sizing: border-box; overflow-y: auto;
+      background: rgba(2, 3, 9, 0.97);
+      color: white; text-align: center;
+      font-family: 'Courier New', monospace;
+    }
+    #survey-overlay.visible, #directions-overlay.visible { display: flex; }
+    #survey-title, #directions-overlay h2 {
+      font-size: 18px; letter-spacing: 3px; margin: 0; color: var(--cyan);
+    }
+    #survey-intro { font-size: 12px; letter-spacing: 1px; color: var(--text-dim); }
+    #survey-questions { display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 640px; }
+    .survey-question { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+    .survey-q-text { font-size: 13px; line-height: 1.5; color: #d4d4d4; }
+    .survey-scale { display: flex; gap: 8px; justify-content: center; }
+    .survey-scale button {
+      width: 34px; height: 34px; font-size: 13px;
+      background: rgba(8, 18, 28, 0.9); border: 1px solid var(--cyan-dim); color: var(--cyan);
+      cursor: pointer; font-family: inherit; transition: filter 0.1s ease;
+    }
+    .survey-scale button:hover { filter: brightness(1.35); }
+    .survey-scale button.selected { background: var(--cyan); color: #020309; border-color: var(--cyan); }
+    #survey-error { font-size: 12px; letter-spacing: 1px; color: var(--orange); display: none; }
+    #survey-error.visible { display: block; }
+    #survey-submit, #directions-accept {
+      padding: 16px 34px; font-size: 13px; letter-spacing: 2px;
+      background: rgba(8, 18, 28, 0.9); border: 1px solid var(--cyan); color: var(--cyan);
+      cursor: pointer; font-family: inherit; transition: filter 0.1s ease;
+    }
+    #survey-submit:hover, #directions-accept:hover { filter: brightness(1.35); }
+    #directions-overlay .directions-body {
+      max-width: 640px; text-align: left; font-size: 13px; line-height: 1.7; color: #d4d4d4;
+    }
+    #directions-overlay .directions-warning {
+      max-width: 640px; text-align: left; font-size: 13px; line-height: 1.6;
+      color: var(--orange); border: 1px solid var(--orange); padding: 12px 16px;
+    }
+    #directions-refs {
+      display: flex; gap: 20px; justify-content: center; max-width: 640px;
+    }
+    #directions-refs figure {
+      margin: 0; display: flex; flex-direction: column; gap: 7px; align-items: center;
+    }
+    #directions-refs img {
+      width: 220px; max-width: 40vw; height: auto; display: block;
+      border: 1px solid var(--line);
+    }
+    #directions-refs figcaption { font-size: 11px; letter-spacing: 2px; }
+    #directions-refs .ref-human { color: var(--cyan); }
+    #directions-refs .ref-overgrown { color: var(--orange); }
+    #directions-close {
+      position: absolute; top: 16px; right: 20px; font-size: 20px; color: var(--cyan);
+      cursor: pointer; line-height: 1;
+    }
+    #directions-close:hover { filter: brightness(1.35); }
+
+    /* Story/lore screen -- shown once, after condition-select and (if
+       present) the PRE survey, before the mission briefing. Pure black
+       (not the dark-blue #020309 the other overlays use) per spec: a
+       plain black in-fiction screen rather than another HUD-styled panel.
+       Same z-index tier (13) as survey/directions since it's sequential
+       with them, never simultaneous. The whole overlay is the click
+       target -- "click anywhere to continue" -- not a button. */
+    #story-overlay {
+      position: fixed; inset: 0; z-index: 13;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 28px; padding: 60px 20px; box-sizing: border-box; overflow-y: auto;
+      background: #000;
+      color: #d4d4d4; text-align: center;
+      font-family: 'Courier New', monospace;
+      cursor: pointer;
+    }
+    #story-overlay.visible { display: flex; }
+    #story-overlay .story-body {
+      max-width: 640px; text-align: left; font-size: 14px; line-height: 1.8;
+    }
+    #story-overlay .story-body p { margin: 0 0 18px 0; }
+    #story-overlay .story-body p:last-child { margin-bottom: 0; }
+    #story-continue {
+      font-size: 12px; letter-spacing: 3px; color: var(--cyan);
+      animation: story-pulse 1.8s ease-in-out infinite;
+    }
+    @keyframes story-pulse {
+      0%, 100% { opacity: 0.45; }
+      50% { opacity: 1; }
+    }
+    /* End-of-game debrief. Shown once a game is finished: after the post
+       survey for AI-assist players, or straight away for human-only. Same
+       overlay treatment (z-index 13, dark bg, cyan, monospace) as the survey
+       and briefing screens. Starts hidden. */
+    #end-overlay {
+      position: fixed; inset: 0; z-index: 13;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; padding: 40px 20px; box-sizing: border-box; overflow-y: auto;
+      background: rgba(2, 3, 9, 0.97);
+      color: white; text-align: center;
+      font-family: 'Courier New', monospace;
+    }
+    #end-overlay.visible { display: flex; }
+    #end-overlay h2 { font-size: 20px; letter-spacing: 4px; margin: 0; color: var(--cyan); }
+    #end-subtitle { font-size: 12px; letter-spacing: 2px; color: var(--text-dim); margin-top: -14px; }
+    #end-stats {
+      display: grid; grid-template-columns: repeat(3, 150px); gap: 16px;
+      justify-content: center; margin: 4px 0;
+    }
+    .end-stat {
+      border: 1px solid var(--line); background: rgba(8, 18, 28, 0.6);
+      padding: 18px 10px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .end-stat-value { font-size: 26px; color: var(--cyan); }
+    .end-stat-label { font-size: 10px; letter-spacing: 2px; color: var(--text-dim); }
+    #end-thanks {
+      font-size: 14px; letter-spacing: 2px; color: var(--cyan);
+      margin-top: 10px; line-height: 1.7;
+    }
+
+  </style>
+</head>
+
+<body>
+  <div id="condition-select">
+    <h2>SELECT MODE FOR THIS SESSION</h2>
+    <div class="mode-buttons">
+      <button id="choose-ai-assist">AI ASSIST</button>
+      <button id="choose-human-only">HUMAN ONLY</button>
+    </div>
+  </div>
+
+  <div id="survey-overlay">
+    <h2 id="survey-title">SURVEY</h2>
+    <div id="survey-intro">7-point scale: 1 = strongly disagree, 7 = strongly agree</div>
+    <div id="survey-questions"></div>
+    <div id="survey-error">Please answer every question before continuing.</div>
+    <button id="survey-submit">SUBMIT</button>
+  </div>
+
+  <div id="story-overlay">
+    <div class="story-body">
+      <p>Cosmic radiation hit Earth. Every human cell began regenerating &mdash; aggressively, endlessly.</p>
+      <p>Those who kept their minds heal normally. They still look like themselves. Their fight is quieter: rationing the resources their bodies now burn just to keep the regeneration in check.</p>
+      <p>Those who lost their minds, or were corrupted by the radiation, don't heal &mdash; they don't stop. Their bodies keep rebuilding past any shape a person should hold. We call them the <strong>overgrowns</strong>.</p>
+      <p>The overgrowns are trying to get into the space station to spread the infection. An overgrown hit lightly can only disguise their skin tone slightly. One hit hard can recolor themselves almost completely.</p>
+      <p id="story-ai-line">Fortunately, your lead engineer has developed an agent to help you.</p>
+      <p>Save as many humans as you can.</p>
+    </div>
+    <div id="story-continue">CLICK ANYWHERE TO CONTINUE</div>
+  </div>
+
+  <div id="directions-overlay">
+    <div id="directions-close" title="Close">✕</div>
+    <h2>MISSION BRIEFING</h2>
+    <div class="directions-body">
+      You are the checkpoint officer. Walk up to a screen and click it to
+      begin inspecting a subject.
+      <br /><br />
+      You have 45 seconds per subject. Choose PERMIT to let a healthy human
+      through, or REJECT to turn away a disguised survivor.
+      <br /><br />
+      Use the ZOOM 1/2/3 buttons to magnify the subject image.
+      <br /><br />
+      Controls: WASD = move · Mouse = look · SPACE = jump · ESC = release mouse.
+    </div>
+    <!-- Reference pair so the player knows what each class looks like before
+         starting. Both source scenes come from content session 6, which a
+         participant only ever reaches on their sixth replay -- a first-time
+         player never sees these scenes in the game itself (and the raw
+         bright-green overgrown form below never appears in-game at all; the
+         in-game ones are always at least partly recolored). -->
+    <div id="directions-refs">
+      <figure>
+        <img src="assets/briefing/reference_human.png" alt="confirmed healthy human" />
+        <figcaption class="ref-human">CONFIRMED HUMAN</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/briefing/reference_overgrown.png" alt="confirmed overgrown" />
+        <figcaption class="ref-overgrown">CONFIRMED OVERGROWN</figcaption>
+      </figure>
+    </div>
+    <div class="directions-warning">
+      WARNING: an overgrown's skin tone is not always as it seems...
+    </div>
+    <button id="directions-accept">ACCEPT</button>
+  </div>
+  <div id="end-overlay">
+    <h2>DEBRIEF</h2>
+    <div id="end-subtitle">CHECKPOINT SHIFT COMPLETE</div>
+    <div id="end-stats"></div>
+    <div id="end-thanks">SESSION COMPLETE — THANK YOU FOR PLAYING.<br />You may now close this window.</div>
+  </div>
+
+  <div id="blocker">
+    <div id="instructions">
+      Click to start
+      <br />
+      <small>
+        WASD = move · Mouse = look · SPACE = jump
+        <br />
+        ESC = release mouse · M = identify mesh under crosshair
+      </small>
+    </div>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="status">Loading map...</div>
+  <div id="dev-reset-btn">RESET CONDITION (ESC first)</div>
+
+  <div id="walk-prompt">WALK UP TO A SCREEN AND CLICK IT TO BEGIN INSPECTION</div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+    import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+    import { SSAOPass } from "three/addons/postprocessing/SSAOPass.js";
+    import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+    import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+    import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+
+    // ============================================================
+    // CONFIG
+    // ============================================================
+    const MAP_PATH = "threeD_player/finalMap4.glb";
+
+    const SPAWN = { x: 11.456, y: 1.539, z: 10.938, yaw: 0.020 };
+    const PLAYER = { eyeHeight: 0.75, moveSpeed: 4.2, jumpSpeed: 7, gravity: -20 };
+
+    const KIOSK_TRIGGER_RADIUS = 4;
+
+    // STATION_CONFIGS: one entry per physical screen. "screenMain" is the
+    // one you confirmed by name. cliff_diagonal_stone001/002 are almost
+    // certainly WRONG -- those read as rock/cliff terrain meshes, not
+    // screens. Press "M" while looking at each of the other two real
+    // screens and swap these meshName values for whatever prints.
+    //
+    // NOTE: stations no longer carry their own `condition`. Condition is
+    // chosen ONCE per session (see CONDITION_SELECT below) and applies to
+    // every screen identically -- see that section for why a per-screen
+    // condition was wrong in the first place.
+    const STATION_CONFIGS = [
+      { meshName: "screenMain" },
+      { meshName: "cliff_diagonal_stone001" }, // left screen -- VERIFY with "M"
+      { meshName: "cliff_diagonal_stone002" }, // right screen -- VERIFY with "M"
+    ];
+
+    // ============================================================
+    // DOM
+    // ============================================================
+    const blocker = document.getElementById("blocker");
+    const statusEl = document.getElementById("status");
+    let mapStatusText = `Loading ${MAP_PATH}...`;
+    let roundsStatusText = "Loading rounds.json...";
+    let temporaryText = "";
+    let temporaryTimer = null;
+
+    function showTemporaryMessage(message, milliseconds = 3200) {
+      temporaryText = message;
+      if (temporaryTimer) clearTimeout(temporaryTimer);
+      temporaryTimer = setTimeout(() => { temporaryText = ""; }, milliseconds);
+    }
+
+    // ============================================================
+    // SCENE / CAMERA / RENDERER
+    // ============================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x020309);
+    scene.fog = null;
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 650);
+    camera.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = SPAWN.yaw;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance", stencil: false, depth: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.toneMappingExposure = 1.14;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.BasicShadowMap;
+    renderer.sortObjects = false;
+    renderer.autoClear = true;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new PointerLockControls(camera, document.body);
+    blocker.addEventListener("click", () => controls.lock());
+    controls.addEventListener("lock", () => blocker.classList.add("hidden"));
+    controls.addEventListener("unlock", () => {
+      // Don't show "click to start" over the HUD when we unlocked the
+      // pointer ourselves so the player can click screen buttons.
+      if (activeStationIndex === -1) blocker.classList.remove("hidden");
+      document.getElementById('dev-reset-btn').classList.remove("locked-disabled");
+    });
+    controls.addEventListener("lock", () => {
+      document.getElementById('dev-reset-btn').classList.add("locked-disabled");
+    });
+
+    function createStarField() {
+      const count = 1500;
+      const positions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const radius = THREE.MathUtils.randFloat(190, 490);
+        const theta = THREE.MathUtils.randFloat(0, Math.PI * 2);
+        const phi = Math.acos(THREE.MathUtils.randFloat(-1, 1));
+        positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = radius * Math.cos(phi);
+        positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color: 0xffffff, size: 0.5, sizeAttenuation: false,
+        transparent: true, opacity: 0.75, depthWrite: false, fog: false
+      });
+      scene.add(new THREE.Points(geometry, material));
+    }
+    createStarField();
+
+    const sunTarget = new THREE.Object3D();
+    sunTarget.position.set(0, 0, 0);
+    scene.add(sunTarget);
+
+    scene.add(new THREE.HemisphereLight(0xfffaf5, 0x806055, 0.9));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+    const sunLight = new THREE.DirectionalLight(0xffd2a6, 1.3);
+    sunLight.position.set(60, 90, 40);
+    sunLight.target = sunTarget;
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.camera.left = -80;
+    sunLight.shadow.camera.right = 80;
+    sunLight.shadow.camera.top = 80;
+    sunLight.shadow.camera.bottom = -80;
+    sunLight.shadow.camera.near = 0.5;
+    sunLight.shadow.camera.far = 300;
+    sunLight.shadow.bias = -0.00002;
+    sunLight.shadow.normalBias = 0.10;
+    sunLight.shadow.radius = 12;
+    scene.add(sunLight);
+
+    const oppositeFillLight = new THREE.DirectionalLight(0xeaf6ff, 0.6);
+    oppositeFillLight.position.set(-55, 40, -50);
+    oppositeFillLight.target = sunTarget;
+    scene.add(oppositeFillLight);
+
+    const frontFillLight = new THREE.DirectionalLight(0xffeddc, 0.35);
+    frontFillLight.position.set(12, 30, 60);
+    frontFillLight.target = sunTarget;
+    scene.add(frontFillLight);
+
+    const bounceLight = new THREE.PointLight(0xff9a72, 0.18, 90, 2);
+    bounceLight.position.set(0, -12, 0);
+    scene.add(bounceLight);
+
+    const permanentWhiteLights = [
+      { x: -4.310, y: 2.834, z: 11.516, intensity: 12, distance: 12 },
+      { x: -7.161, y: 2.044, z: -1.477, intensity: 12, distance: 12 },
+      { x: -4.056, y: 2.375, z: -25.507, intensity: 12, distance: 12 },
+      { x: 10.747, y: 2.577, z: -29.512, intensity: 12, distance: 12 }
+    ];
+    for (const c of permanentWhiteLights) {
+      const light = new THREE.PointLight(0xffffff, c.intensity, c.distance, 2);
+      light.position.set(c.x, c.y, c.z);
+      scene.add(light);
+    }
+
+    const fallbackGround = new THREE.Mesh(
+      new THREE.PlaneGeometry(260, 260),
+      new THREE.MeshStandardMaterial({ color: 0xee875e, roughness: 0.9, metalness: 0 })
+    );
+    fallbackGround.rotation.x = -Math.PI / 2;
+    fallbackGround.position.y = -0.05;
+    fallbackGround.receiveShadow = true;
+    scene.add(fallbackGround);
+
+    function configureMaterial(material) {
+      if (!material) return;
+      const textures = [
+        material.map, material.normalMap, material.roughnessMap,
+        material.metalnessMap, material.aoMap, material.emissiveMap
+      ];
+      const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+      for (const texture of textures) {
+        if (!texture) continue;
+        texture.anisotropy = maxAnisotropy;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = true;
+        texture.needsUpdate = true;
+      }
+      material.needsUpdate = true;
+    }
+
+    // The screen meshes' UVs run way outside the normal 0..1 range (e.g.
+    // spanning something like 4.2..4.9 instead of 0..1), so a texture
+    // applied via applyScreenTexture() only ever samples one edge pixel --
+    // the monitor looks like flat grey no matter what image is loaded. This
+    // rescales a mesh's UV attribute in place, stretching whatever min..max
+    // range it actually occupies back to exactly 0..1, which preserves the
+    // relative UV layout (so the image still maps onto the screen the same
+    // shape-wise) while making a normal full-image texture actually show up.
+    // Called once per resolved station mesh right after the map loads.
+    function normalizeMeshUVs(mesh) {
+      const uvAttr = mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.uv;
+      if (!uvAttr) {
+        console.warn(`normalizeMeshUVs: mesh "${mesh.name}" has no UV attribute -- can't remap.`);
+        return;
+      }
+      let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+      for (let i = 0; i < uvAttr.count; i++) {
+        const u = uvAttr.getX(i);
+        const v = uvAttr.getY(i);
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      const rangeU = (maxU - minU) || 1;
+      const rangeV = (maxV - minV) || 1;
+      for (let i = 0; i < uvAttr.count; i++) {
+        // The extra "1 - ..." on V corrects an upside-down image: after a
+        // plain min/max rescale to 0..1 the photo rendered flipped
+        // vertically on the mesh, so invert V here rather than in the
+        // texture/material (keeps this one function the single place that
+        // owns "how this mesh's UVs map to a normal image").
+        uvAttr.setXY(
+          i,
+          (uvAttr.getX(i) - minU) / rangeU,
+          1 - (uvAttr.getY(i) - minV) / rangeV
+        );
+      }
+      uvAttr.needsUpdate = true;
+      console.log(
+        `normalizeMeshUVs: "${mesh.name}" UVs were [${minU.toFixed(3)}..${maxU.toFixed(3)}] x ` +
+        `[${minV.toFixed(3)}..${maxV.toFixed(3)}] -- rescaled to 0..1`
+      );
+    }
+
+    // ============================================================
+    // STATIONS — one per physical screen, each with its own round
+    // progress, timer, and fixed AI-assist condition.
+    // ============================================================
+    function createStationState(config, index) {
+      return {
+        index,
+        meshName: config.meshName,
+        mesh: null,                             // resolved once the map loads
+        position: new THREE.Vector3(),
+        roundIndex: 0,
+        currentRound: null,
+        roundStartTime: null,
+        timerInterval: null,
+        timeRemaining: 45,
+        results: [],
+        zoomLevel: 0, // 0 = off, 1-3 = zoom settings (ZOOM 1/2/3 buttons)
+      };
+    }
+    const stations = STATION_CONFIGS.map(createStationState);
+    let activeStationIndex = -1; // -1 = no screen currently opened for interaction
+    let mapLoaded = false;
+
+    // ============================================================
+    // MAP LOADING
+    // ============================================================
+    const collidables = [fallbackGround];
+    const loader = new GLTFLoader();
+
+    loader.load(
+      MAP_PATH,
+      (gltf) => {
+        const map = gltf.scene;
+        scene.add(map);
+        map.updateMatrixWorld(true);
+
+        const foundNames = [];
+        map.traverse((child) => {
+          if (!child.isMesh) return;
+          child.castShadow = true;
+          child.receiveShadow = true;
+          collidables.push(child);
+
+          if (Array.isArray(child.material)) {
+            child.material.forEach(configureMaterial);
+          } else {
+            configureMaterial(child.material);
+          }
+
+          const station = stations.find((s) => s.meshName === child.name);
+          if (station) {
+            station.mesh = child;
+            child.getWorldPosition(station.position);
+            foundNames.push(child.name);
+            normalizeMeshUVs(child); // fix out-of-range UVs so applyScreenTexture actually shows on the mesh
+          }
+        });
+
+        const missing = stations.filter((s) => !s.mesh).map((s) => s.meshName);
+        if (missing.length > 0) {
+          console.warn(
+            `Could not find these station mesh names in ${MAP_PATH}: ${missing.join(", ")}. ` +
+            `Press "M" while looking at each real screen to get the correct name(s), ` +
+            `then update STATION_CONFIGS.`
+          );
+        }
+
+        mapStatusText = `Loaded ${MAP_PATH}`;
+        showTemporaryMessage(`Map loaded — found screens: ${foundNames.join(", ") || "none"}`);
+        console.log("Loaded map:", map);
+
+        mapLoaded = true;
+        tryShowPassiveRounds();
+      },
+      (progress) => {
+        if (progress.total > 0) {
+          const percent = Math.round((progress.loaded / progress.total) * 100);
+          mapStatusText = `Loading ${MAP_PATH}: ${percent}%`;
+        } else {
+          mapStatusText = `Loading ${MAP_PATH}...`;
+        }
+      },
+      (error) => {
+        mapStatusText = `Could not load ${MAP_PATH}`;
+        console.error("GLB loading error:", error);
+      }
+    );
+
+    // ============================================================
+    // POST-PROCESSING
+    // ============================================================
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+
+    // SSAO disabled for performance
+    // const ssaoPass = new SSAOPass(scene, camera, window.innerWidth / 2, window.innerHeight / 2);
+    // ssaoPass.kernelRadius = 3;
+    // ssaoPass.minDistance = 0.001;
+    // ssaoPass.maxDistance = 0.045;
+    // composer.addPass(ssaoPass);
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 0.05, 0.15, 0.9
+    );
+    composer.addPass(bloomPass);
+
+    const VividColorShader = {
+      uniforms: { tDiffuse: { value: null }, saturation: { value: 1.07 }, contrast: { value: 1.01 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float saturation;
+        uniform float contrast;
+        varying vec2 vUv;
+        void main() {
+          vec4 texel = texture2D(tDiffuse, vUv);
+          vec3 color = texel.rgb;
+          float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          color = mix(vec3(luminance), color, saturation);
+          color = (color - 0.5) * contrast + 0.5;
+          gl_FragColor = vec4(clamp(color, 0.0, 1.0), texel.a);
+        }
+      `
+    };
+    composer.addPass(new ShaderPass(VividColorShader));
+    composer.addPass(new OutputPass());
+
+    // ============================================================
+    // MOVEMENT INPUT
+    // ============================================================
+    const keys = { forward: false, backward: false, left: false, right: false };
+    let wantsJump = false;
+
+    document.addEventListener("keydown", (event) => {
+      switch (event.code) {
+        case "KeyW": keys.forward = true; break;
+        case "KeyS": keys.backward = true; break;
+        case "KeyA": keys.left = true; break;
+        case "KeyD": keys.right = true; break;
+        case "Space": wantsJump = true; break;
+      }
+    });
+    document.addEventListener("keyup", (event) => {
+      switch (event.code) {
+        case "KeyW": keys.forward = false; break;
+        case "KeyS": keys.backward = false; break;
+        case "KeyA": keys.left = false; break;
+        case "KeyD": keys.right = false; break;
+        case "Space": wantsJump = false; break;
+      }
+    });
+
+    // ============================================================
+    // GROUND DETECTION + fall-off-map respawn safety net
+    // ============================================================
+    const raycaster = new THREE.Raycaster();
+    const rayOrigin = new THREE.Vector3();
+    const down = new THREE.Vector3(0, -1, 0);
+    let verticalVelocity = 0;
+
+    // Collision detection constants and helpers (from map (1).html)
+    const PLAYER_RADIUS = 0.34;
+    const wallRaycaster = new THREE.Raycaster();
+    const _rightVec = new THREE.Vector3();
+    const _forwardVec = new THREE.Vector3();
+    const _rayOriginVec = new THREE.Vector3();
+    const _rayDirVec = new THREE.Vector3();
+
+    function isBlocked(originHeight, dirX, dirY, dirZ, distance) {
+      if (distance <= 0) {
+        return false;
+      }
+
+      _rayOriginVec.set(
+        camera.position.x,
+        originHeight,
+        camera.position.z
+      );
+
+      _rayDirVec.set(dirX, dirY, dirZ);
+
+      wallRaycaster.set(_rayOriginVec, _rayDirVec);
+      wallRaycaster.far = distance + PLAYER_RADIUS;
+
+      const hits = wallRaycaster.intersectObjects(
+        collidables,
+        false
+      );
+
+      return hits.length > 0;
+    }
+
+    function tryMove(rightAmount, forwardAmount) {
+      // Match PointerLockControls' internal basis vectors exactly so the
+      // collision check lines up with the actual movement it will perform.
+      _rightVec.setFromMatrixColumn(camera.matrix, 0);
+      _forwardVec.crossVectors(camera.up, _rightVec);
+
+      // Single ray at chest height — catches walls without doubling raycast cost.
+      const chestY =
+        camera.position.y -
+        PLAYER.eyeHeight +
+        PLAYER.eyeHeight * 0.65;
+
+      if (rightAmount !== 0) {
+        const sign = Math.sign(rightAmount);
+
+        const blocked = isBlocked(
+          chestY,
+          _rightVec.x * sign,
+          _rightVec.y * sign,
+          _rightVec.z * sign,
+          Math.abs(rightAmount)
+        );
+
+        if (!blocked) {
+          controls.moveRight(rightAmount);
+        }
+      }
+
+      if (forwardAmount !== 0) {
+        const sign = Math.sign(forwardAmount);
+
+        const blocked = isBlocked(
+          chestY,
+          _forwardVec.x * sign,
+          _forwardVec.y * sign,
+          _forwardVec.z * sign,
+          Math.abs(forwardAmount)
+        );
+
+        if (!blocked) {
+          controls.moveForward(forwardAmount);
+        }
+      }
+    }
+
+    function findGroundHeight(x, feetY, z) {
+      rayOrigin.set(x, feetY + 0.4, z);
+      raycaster.set(rayOrigin, down);
+      raycaster.far = 3.4;
+      const hits = raycaster.intersectObjects(collidables, false);
+      if (hits.length === 0) return null;
+      return hits[0].point.y;
+    }
+
+    const FALL_RESPAWN_Y = -40;
+    function respawnIfFallen() {
+      if (camera.position.y < FALL_RESPAWN_Y) {
+        camera.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+        verticalVelocity = 0;
+        showTemporaryMessage("Fell off the map — respawned");
+      }
+    }
+
+    // ============================================================
+    // DEBUG: press M while looking at something to identify its mesh —
+    // use this if screenMain.001 / .002 turn out to be wrong guesses.
+    // ============================================================
+    const centerScreen = new THREE.Vector2(0, 0);
+    async function identifyMeshAtCrosshair() {
+      raycaster.setFromCamera(centerScreen, camera);
+      raycaster.far = 650;
+      const hits = raycaster.intersectObjects(collidables, false);
+      if (hits.length === 0) {
+        showTemporaryMessage("Nothing under crosshair");
+        return;
+      }
+      const hit = hits[0];
+      const mesh = hit.object;
+      console.log(`mesh.name: ${mesh.name}  |  distance: ${hit.distance.toFixed(2)}`);
+      try {
+        await navigator.clipboard.writeText(mesh.name || "");
+        showTemporaryMessage(`Mesh: "${mesh.name}" — name copied to clipboard`);
+      } catch {
+        showTemporaryMessage(`Mesh: "${mesh.name}" — see console`);
+      }
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.repeat) return;
+      if (event.code === "KeyM") identifyMeshAtCrosshair();
+    });
+
+    // ============================================================
+    // STATUS OVERLAY
+    // ============================================================
+    function updateStatus() {
+      const lines = [
+        mapStatusText,
+        roundsStatusText, "",
+        `X: ${camera.position.x.toFixed(2)}`,
+        `Y: ${camera.position.y.toFixed(2)}`,
+        `Z: ${camera.position.z.toFixed(2)}`,
+        "", "M: identify mesh under crosshair"
+      ];
+      if (temporaryText) lines.push("", temporaryText);
+      statusEl.textContent = lines.join("\n");
+    }
+
+    // ============================================================
+    // CHECKPOINT GAME LOGIC
+    // ============================================================
+    function getOrCreateParticipantId() {
+      let id = localStorage.getItem('participant_id');
+      if (!id) {
+        id = crypto.randomUUID();
+        localStorage.setItem('participant_id', id);
+      }
+      return id;
+    }
+    const PARTICIPANT_ID = getOrCreateParticipantId();
+    const SESSION_ID = crypto.randomUUID();
+
+    // PARTICIPANT_ID_CHAIN persists across resets (never cleared by the
+    // reset button) so we can trace "this browser played before as X,
+    // then reset and came back as Y." Each reset appends the outgoing id.
+    function getPrevParticipantId() {
+      const chain = JSON.parse(localStorage.getItem('participant_id_chain') || '[]');
+      return chain.length > 0 ? chain[chain.length - 1] : null;
+    }
+    const PREV_PARTICIPANT_ID = getPrevParticipantId();
+
+    // Playtest-only reset button — always visible, no gating. Fine while
+    // testing is just the team screen-sharing; remove/hide before real
+    // uncontrolled data collection so participants can't reset their own
+    // condition assignment.
+    document.getElementById('dev-reset-btn').addEventListener('click', () => {
+      const outgoingId = localStorage.getItem('participant_id');
+      if (outgoingId) {
+        const chain = JSON.parse(localStorage.getItem('participant_id_chain') || '[]');
+        chain.push(outgoingId);
+        localStorage.setItem('participant_id_chain', JSON.stringify(chain));
+      }
+      localStorage.removeItem('condition');
+      localStorage.removeItem('participant_id');
+      localStorage.removeItem('session_count_' + PARTICIPANT_ID);
+      location.reload();
+    });
+
+    // ---------------------------------------------------------------------
+    // CONDITION — chosen ONCE per participant, applies to every screen for
+    // the rest of the session. This is NOT per-screen: seeing AI advice on
+    // one screen teaches you what a disguise looks like, so the same
+    // participant must never experience both conditions, no matter how
+    // many screens they walk between. (This replaces an earlier, broken
+    // version where each physical screen had its own fixed condition --
+    // that let one person get both human_ai and human_alone in a single
+    // session just by walking to a different screen.)
+    // ---------------------------------------------------------------------
+    let CONDITION = localStorage.getItem('condition'); // null until chosen
+
+    const conditionSelectEl = document.getElementById('condition-select');
+
+    function chooseCondition(value) {
+      CONDITION = value;
+      localStorage.setItem('condition', value);
+      conditionSelectEl.classList.remove('visible');
+      // First-time onboarding, once per participant: AI-assist takes the PRE
+      // survey first, then the story screen, then the briefing; human-only
+      // goes straight to the story screen (no survey). Both hand off to
+      // #blocker "Click to start" after the briefing.
+      if (value === 'human_ai') {
+        showSurvey('pre');
+      } else {
+        showStory();
+      }
+    }
+
+    if (!CONDITION) {
+      // First time this participant_id has been seen: block everything
+      // else (walking, screens, all of it) behind this choice. Sits above
+      // #blocker (higher z-index) so "Click to start" isn't reachable
+      // until a mode is picked.
+      conditionSelectEl.classList.add('visible');
+    }
+    document.getElementById('choose-ai-assist').addEventListener('click', () => chooseCondition('human_ai'));
+    document.getElementById('choose-human-only').addEventListener('click', () => chooseCondition('human_alone'));
+
+    // ONBOARDING SURVEYS + DIRECTIONS
+    // Pre/post attitude surveys (AI-assist condition only) plus a static
+    // mission briefing. All gated to run once per participant: the pre
+    // survey + briefing hang off chooseCondition (which only fires the first
+    // time a condition is picked), and the post survey is guarded by a
+    // per-participant localStorage flag in the startRound completion branch.
+    // None of this re-runs for a returning participant.
+    // ---------------------------------------------------------------------
+    const PRE_SURVEY_QUESTIONS = [
+      { id: 'pre_q1', text: 'I regularly use AI tools (such as ChatGPT, Gemini, Copilot, Claude, etc.).' },
+      { id: 'pre_q2', text: 'I am comfortable making decisions with the help of AI.' },
+      { id: 'pre_q3', text: 'I understand that AI systems can sometimes make mistakes.' },
+      { id: 'pre_q4', text: 'I generally trust recommendations made by AI.' },
+      { id: 'pre_q5', text: 'I believe AI often performs better than humans at recognizing visual patterns.' },
+      { id: 'pre_q6', text: 'If an AI disagreed with me, I would probably reconsider my decision.' },
+      { id: 'pre_q7', text: 'I trust my own judgment when making difficult decisions.' },
+      { id: 'pre_q8', text: 'I prefer to make important decisions myself rather than relying on AI.' },
+      { id: 'pre_q9', text: 'I am confident in my ability to make decisions based only on visual information.' },
+      { id: 'pre_q10', text: 'I think AI will become increasingly important in security and screening tasks.' },
+    ];
+    const POST_SURVEY_QUESTIONS = [
+      { id: 'post_q1', text: "I trusted the AI's recommendations during the game." },
+      { id: 'post_q2', text: 'The AI generally gave useful recommendations.' },
+      { id: 'post_q3', text: 'I felt the AI made accurate decisions.' },
+      { id: 'post_q4', text: 'I relied on the AI more as the game progressed.' },
+      { id: 'post_q5', text: 'I depended on the AI more than I expected.' },
+      { id: 'post_q6', text: "I often accepted the AI's recommendation without much additional thought." },
+      { id: 'post_q7', text: 'I noticed situations where the AI made mistakes.' },
+      { id: 'post_q8', text: 'Even when the AI made mistakes, I still trusted its future recommendations.' },
+      { id: 'post_q9', text: 'I felt confident in my own decisions during the game.' },
+      { id: 'post_q10', text: 'I would feel comfortable making similar decisions without AI assistance.' },
+    ];
+
+    const surveyOverlay = document.getElementById('survey-overlay');
+    const surveyTitleEl = document.getElementById('survey-title');
+    const surveyQuestionsEl = document.getElementById('survey-questions');
+    const surveyErrorEl = document.getElementById('survey-error');
+    const surveySubmitBtn = document.getElementById('survey-submit');
+    const directionsOverlay = document.getElementById('directions-overlay');
+
+    let surveyPhase = null;      // 'pre' | 'post' while a survey is open
+    let surveyResponses = {};    // { pre_q1: 3, ... } for the currently open survey
+    let preSurveyAnswers = null;    // retained PRE answers for the POST CSV export
+    let preSurveyTimestamp = null;  // when the PRE survey was actually submitted
+
+    // Render one question set into the reusable #survey-overlay. Each
+    // question gets a 1..7 button row; clicking a button records the value
+    // and highlights it, so exactly one option is selectable per question.
+    function renderSurvey(questions) {
+      surveyResponses = {};
+      surveyQuestionsEl.innerHTML = '';
+      questions.forEach((q, i) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'survey-question';
+        const text = document.createElement('div');
+        text.className = 'survey-q-text';
+        text.textContent = `${i + 1}. ${q.text}`;
+        wrap.appendChild(text);
+        const scale = document.createElement('div');
+        scale.className = 'survey-scale';
+        for (let v = 1; v <= 7; v++) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = v;
+          btn.addEventListener('click', () => {
+            surveyResponses[q.id] = v;
+            scale.querySelectorAll('button').forEach((b) => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            surveyErrorEl.classList.remove('visible');
+          });
+          scale.appendChild(btn);
+        }
+        wrap.appendChild(scale);
+        surveyQuestionsEl.appendChild(wrap);
+      });
+    }
+
+    function showSurvey(phase) {
+      surveyPhase = phase;
+      const questions = phase === 'pre' ? PRE_SURVEY_QUESTIONS : POST_SURVEY_QUESTIONS;
+      surveyTitleEl.textContent = phase === 'pre' ? 'PRE-GAME SURVEY' : 'POST-GAME SURVEY';
+      renderSurvey(questions);
+      surveyErrorEl.classList.remove('visible');
+      surveyOverlay.classList.add('visible');
+    }
+
+    function showDirections() {
+      directionsOverlay.classList.add('visible');
+    }
+    function hideDirections() { directionsOverlay.classList.remove('visible'); }
+
+    // STORY / LORE SCREEN
+    // Shown once per participant, after condition-select and (for AI-assist)
+    // the PRE survey, before the mission briefing. Plain black screen, the
+    // whole thing is the click target -- clicking anywhere advances straight
+    // to the briefing.
+    const storyOverlay = document.getElementById('story-overlay');
+    function showStory() {
+      document.getElementById('story-ai-line').style.display =
+        CONDITION === 'human_ai' ? '' : 'none';
+      storyOverlay.classList.add('visible');
+    }
+    function hideStory() { storyOverlay.classList.remove('visible'); }
+    storyOverlay.addEventListener('click', () => {
+      hideStory();
+      showDirections();
+    });
+
+    // Required-answer validation on submit: every question in the current
+    // set must have a selection, else show the error and don't proceed.
+    function handleSurveySubmit() {
+      const questions = surveyPhase === 'pre' ? PRE_SURVEY_QUESTIONS : POST_SURVEY_QUESTIONS;
+      const allAnswered = questions.every((q) => surveyResponses[q.id] !== undefined);
+      if (!allAnswered) {
+        surveyErrorEl.classList.add('visible');
+        return;
+      }
+      const answers = {};
+      questions.forEach((q) => { answers[q.id] = surveyResponses[q.id]; });
+
+      if (surveyPhase === 'pre') {
+        preSurveyAnswers = answers;
+        // Stamp the PRE survey now, at submit -- otherwise its rows inherit the
+        // POST export time and we lose when the pre was actually taken.
+        preSurveyTimestamp = new Date().toISOString();
+        localStorage.setItem('survey_pre_' + PARTICIPANT_ID, JSON.stringify(answers));
+        localStorage.setItem('survey_pre_ts_' + PARTICIPANT_ID, preSurveyTimestamp);
+        surveyOverlay.classList.remove('visible');
+        showStory();
+      } else {
+        localStorage.setItem('survey_post_' + PARTICIPANT_ID, JSON.stringify(answers));
+        exportSurveyCSV(answers);
+        localStorage.setItem('post_survey_done_' + PARTICIPANT_ID, 'true');
+        surveyOverlay.classList.remove('visible');
+        // Debrief was held behind the post survey; show it now.
+        if (pendingEndStats) {
+          showEndScreen(pendingEndStats);
+          pendingEndStats = null;
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // REMOTE DATA COLLECTION
+    // The CSV exports below still download locally (a reliable backup), but on
+    // itch.io a local download lands on the PLAYER's machine, not ours -- so we
+    // ALSO POST the same rows to a Google Apps Script web app that appends them
+    // to a Sheet we own. Fire-and-forget: `no-cors` sends the request without a
+    // CORS preflight and we don't read the response, so a slow or failed send
+    // can never stall or break the game. If DATA_ENDPOINT is empty (local dev),
+    // the POST is skipped and only the download runs.
+    //
+    // `kind` picks the Sheet tab: 'trials' or 'surveys'. Payload is
+    // { kind, headers, rows } -- the same header + row arrays the CSV is built
+    // from, so the Sheet and the downloaded CSV always match.
+    // ---------------------------------------------------------------------
+    const DATA_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwkj7hPye8DlzPCr-cCFOet33PtFPE5obfM2gOwB2gzFxTa7Pc8kxnMQcDkuuFkUm69/exec';
+
+    function sendToServer(kind, headers, rows) {
+      if (!DATA_ENDPOINT || !rows.length) return;   // no endpoint / nothing to send
+      try {
+        fetch(DATA_ENDPOINT, {
+          method: 'POST',
+          mode: 'no-cors',
+          body: JSON.stringify({ kind, headers, rows }),
+        }).catch(() => {});   // swallow network errors -- the local download is our backup
+      } catch (e) { /* ignore -- never let logging break gameplay */ }
+    }
+
+    // Survey CSV in LONG format: one row per answered question, all PRE rows
+    // (phase "pre") then all POST rows (phase "post"). PRE answers are read
+    // from the retained variable, falling back to localStorage. Fields with
+    // a comma or quote are CSV-escaped (question texts contain commas).
+    // Reuses the Blob-download approach from exportResultsCSV.
+    function exportSurveyCSV(postAnswers) {
+      const csvEscape = (v) => {
+        const s = (v === null || v === undefined) ? '' : String(v);
+        return /[",]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const headers = [
+        'participant_id', 'session_id', 'condition', 'phase',
+        'question_id', 'question_text', 'response', 'timestamp',
+      ];
+      const postTimestamp = new Date().toISOString();
+      // Pre rows carry the time the pre survey was actually submitted (stamped
+      // in handleSurveySubmit), not the post-export time. Fall back to the post
+      // time only if that stamp is somehow missing.
+      const preTimestamp = preSurveyTimestamp
+        || localStorage.getItem('survey_pre_ts_' + PARTICIPANT_ID)
+        || postTimestamp;
+      const rows = [];
+      const preAnswers = preSurveyAnswers
+        || JSON.parse(localStorage.getItem('survey_pre_' + PARTICIPANT_ID) || 'null');
+      const addRows = (phase, questions, answers, timestamp) => {
+        if (!answers) return;
+        questions.forEach((q) => {
+          if (answers[q.id] === undefined) return;
+          rows.push([
+            PARTICIPANT_ID, SESSION_ID, CONDITION, phase,
+            q.id, q.text, answers[q.id], timestamp,
+          ]);
+        });
+      };
+      addRows('pre', PRE_SURVEY_QUESTIONS, preAnswers, preTimestamp);
+      addRows('post', POST_SURVEY_QUESTIONS, postAnswers, postTimestamp);
+
+      sendToServer('surveys', headers, rows);   // POST to our Sheet (backup: the download below)
+
+      const csv = [headers, ...rows]
+        .map((row) => row.map(csvEscape).join(','))
+        .join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `survey-${PARTICIPANT_ID}-${postTimestamp.replace(/[:/.]/g, '-')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    surveySubmitBtn.addEventListener('click', handleSurveySubmit);
+    document.getElementById('directions-close').addEventListener('click', hideDirections);
+    document.getElementById('directions-accept').addEventListener('click', hideDirections);
+
+    // END-OF-GAME DEBRIEF
+    // A per-game stats screen. It's held in pendingEndStats when the post
+    // survey needs to go first (AI-assist, first game) and shown the moment
+    // that survey is submitted; otherwise (human-only, or an AI replay whose
+    // post survey is already done) it shows straight from the completion
+    // branch. Stats come from station.results (the same rows the trial CSV
+    // exports), so they always match the logged data.
+    // ---------------------------------------------------------------------
+    const endOverlay = document.getElementById('end-overlay');
+    const endStatsEl = document.getElementById('end-stats');
+    let pendingEndStats = null;
+
+    function computeStats(station) {
+      const r = station.results;
+      const total = r.length;
+      const correct = r.filter((e) => e.correct === true).length;
+      // A null player_answer_human means the 45s timer ran out with no call.
+      const timeouts = r.filter((e) => e.player_answer_human === null).length;
+      const accuracy = total ? Math.round((correct / total) * 100) : 0;
+      // Reaction time only means something for rounds the player actually
+      // decided, so timeouts (which always read ~45s) are excluded.
+      const rts = r.filter((e) => e.player_answer_human !== null).map((e) => e.reaction_time_ms);
+      const avgRtMs = rts.length ? rts.reduce((a, b) => a + b, 0) / rts.length : null;
+      const disguisesTotal = r.filter((e) => e.ground_truth_human === false).length;
+      const disguisesCaught = r.filter((e) => e.ground_truth_human === false && e.correct === true).length;
+      const humansTotal = r.filter((e) => e.ground_truth_human === true).length;
+      const humansCleared = r.filter((e) => e.ground_truth_human === true && e.correct === true).length;
+      return { total, correct, timeouts, accuracy, avgRtMs,
+               disguisesTotal, disguisesCaught, humansTotal, humansCleared };
+    }
+
+    function showEndScreen(stats) {
+      const cells = [
+        { label: 'SCORE', value: `${stats.correct} / ${stats.total}` },
+        { label: 'ACCURACY', value: `${stats.accuracy}%` },
+        { label: 'AVG REACTION', value: stats.avgRtMs === null ? '—' : `${(stats.avgRtMs / 1000).toFixed(1)}s` },
+        { label: 'DISGUISES CAUGHT', value: `${stats.disguisesCaught} / ${stats.disguisesTotal}` },
+        { label: 'HUMANS CLEARED', value: `${stats.humansCleared} / ${stats.humansTotal}` },
+        { label: 'TIMED OUT', value: `${stats.timeouts}` },
+      ];
+      endStatsEl.innerHTML = '';
+      cells.forEach((c) => {
+        const cell = document.createElement('div');
+        cell.className = 'end-stat';
+        const v = document.createElement('div');
+        v.className = 'end-stat-value';
+        v.textContent = c.value;
+        const l = document.createElement('div');
+        l.className = 'end-stat-label';
+        l.textContent = c.label;
+        cell.appendChild(v);
+        cell.appendChild(l);
+        endStatsEl.appendChild(cell);
+      });
+      endOverlay.classList.add('visible');
+    }
+
+    // No DONE button: the debrief IS the final screen. Results were already
+    // exported/POSTed before it showed, so the session simply ends here.
+
+    function getNextContentSession(participantId) {
+      const countKey = 'session_count_' + participantId;
+      const playCount = parseInt(localStorage.getItem(countKey) || '0', 10);
+      localStorage.setItem(countKey, String(playCount + 1));
+      const sessionKey = String((playCount % 6) + 1);
+      return { sessionKey, playCount };
+    }
+    const { sessionKey: CONTENT_SESSION_KEY, playCount: PLAY_COUNT } = getNextContentSession(PARTICIPANT_ID);
+
+    const walkPrompt = document.getElementById('walk-prompt');
+
+    // ---------- round order ----------
+    // Humans and every zombie tier are shuffled randomly through the whole
+    // session -- no difficulty ramp, no clumping by tier or ground truth. The
+    // shuffle is seeded off the content session key, so a given session always
+    // deals in the same order (result CSVs stay reproducible) while still being
+    // an unpredictable mix, and ground truth isn't correlated with position.
+    function makeSeededRng(seedStr) {
+      let h = 1779033703 ^ seedStr.length;
+      for (let i = 0; i < seedStr.length; i++) {
+        h = Math.imul(h ^ seedStr.charCodeAt(i), 3432918353);
+        h = (h << 13) | (h >>> 19);
+      }
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      let a = (h ^= h >>> 16) >>> 0;
+      return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function seededShuffle(arr, rng) {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // Shuffle the whole session (humans + all zombie tiers together) with a
+    // session-seeded RNG.
+    function orderRounds(rounds, seedStr) {
+      return seededShuffle(rounds, makeSeededRng(seedStr));
+    }
+    // --------------------------------------
+
+    let ROUNDS = [];
+    async function loadRounds() {
+      try {
+        const res = await fetch('data/game_sets/rounds.json', { cache: 'no-store' });
+        if (!res.ok) {
+          throw new Error(`rounds.json responded ${res.status} ${res.statusText}`);
+        }
+        const sessionsByKey = await res.json();
+        const sessionRounds = sessionsByKey[CONTENT_SESSION_KEY];
+        if (!Array.isArray(sessionRounds)) {
+          throw new Error(`rounds.json has no session "${CONTENT_SESSION_KEY}" (keys found: ${Object.keys(sessionsByKey).join(", ") || "none"})`);
+        }
+        ROUNDS = orderRounds(sessionRounds, CONTENT_SESSION_KEY);
+        roundsStatusText = `Loaded ${ROUNDS.length} rounds (session ${CONTENT_SESSION_KEY}, shuffled)`;
+      } catch (err) {
+        // This is the #1 reason the screen shows nothing: no round data
+        // means tryShowPassiveRounds() has nothing to display, and it was
+        // failing SILENTLY before this try/catch existed. Surface it in
+        // the on-screen status box so it's visible without opening
+        // DevTools.
+        console.error("Failed to load rounds.json:", err);
+        roundsStatusText = `ERROR loading rounds.json: ${err.message}`;
+      }
+    }
+
+    const WAVE_START = 1; 
+    const WAVE_TOTAL = 5;
+
+    // ============================================================
+    // ON-MESH HUD -- everything (subject image, threat list, action
+    // buttons, decision buttons, AI panel, timer/wave text) is drawn onto
+    // a single 2D canvas, which becomes the station mesh's texture while
+    // that station is open. There is no DOM/CSS overlay for any of this --
+    // "clicking a button" means raycasting from the crosshair (screen
+    // center, since the pointer stays locked throughout) onto the mesh,
+    // reading the hit's UV coordinate, and mapping that UV to a pixel
+    // position on this same canvas to see which button rect it falls in.
+    // ============================================================
+    const HUD_CANVAS_W = 1280;
+    const HUD_CANVAS_H = 720;
+    const hudCanvas = document.createElement('canvas');
+    hudCanvas.width = HUD_CANVAS_W;
+    hudCanvas.height = HUD_CANVAS_H;
+    const hudCtx = hudCanvas.getContext('2d');
+    const hudTexture = new THREE.CanvasTexture(hudCanvas);
+    hudTexture.colorSpace = THREE.SRGBColorSpace;
+    hudTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    // The mesh appears larger than the actual visible screen area -- the
+    // border meshes (Mesh_desk_computerScreen004/005/006) sit in front of
+    // the 3 screens and physically occlude their outer edge, and you want
+    // to keep those borders rather than hide them. Rather than guessing
+    // SAFE_MARGIN and looping back and forth, it's live-tunable: press
+    // [ to shrink the safe area (pull content further from the edges) and
+    // ] to grow it, while looking at an open station -- the HUD redraws
+    // immediately so you can dial it in by eye until nothing sits behind
+    // a border, then just tell me the final number to bake in permanently.
+    // Two debug borders are drawn every frame: SAFE_RECT (green) is this
+    // inset area, and the full canvas edge (yellow) is the true 0..1 UV
+    // extent -- useful for seeing exactly how much margin you've dialed in.
+    let SAFE_MARGIN = 0.09; // fraction of each dimension trimmed off all 4 sides -- calibrated live against the real screen
+    let SAFE_RECT, LAYOUT, BUTTONS, actionsHeaderH, actionsRowH;
+
+    // Places a rect at fractional coordinates (0..1) of SAFE_RECT, so the
+    // whole layout's composition stays proportional to SAFE_RECT no matter
+    // how SAFE_MARGIN ends up getting tuned. VERTICAL_NUDGE shifts
+    // everything up by a small fixed pixel amount on top of that -- tweak
+    // this directly for further tiny vertical adjustments.
+    const VERTICAL_NUDGE = 15;
+    // Magnification applied to the subject image per zoom level (index =
+    // station.zoomLevel, 0 = off). Each step zooms in further than the old
+    // single fixed-12% zoom toggle did.
+    const ZOOM_PADS = [0, 0.25, 0.55, 0.95];
+    // Plain-language gloss for the four official verdict lines the advisory
+    // can open with (they come from THREAT_TEXT in curate_game_sets.py, via
+    // rounds.json). Display-only translation of what the CNN actually said --
+    // no invented reasoning, same rule as the advisory lines themselves.
+    const THREAT_GLOSS = {
+      'No Anomalies Detected': 'reads as a healthy human',
+      'Trauma Indicators Present': 'reads as injured, but human',
+      'Overgrowth Signature Detected': 'reads as an overgrown',
+      'No Vital Signs Detected': 'reads as a corpse',
+    };
+    function frac(fx, fy, fw, fh) {
+      return {
+        x: SAFE_RECT.x + fx * SAFE_RECT.w,
+        y: SAFE_RECT.y + fy * SAFE_RECT.h - VERTICAL_NUDGE,
+        w: fw * SAFE_RECT.w,
+        h: fh * SAFE_RECT.h,
+      };
+    }
+
+    function actionsRow(i) {
+      return {
+        x: LAYOUT.actions.x, w: LAYOUT.actions.w,
+        y: LAYOUT.actions.y + actionsHeaderH + i * actionsRowH,
+        h: actionsRowH,
+      };
+    }
+
+    // Recomputes SAFE_RECT, LAYOUT, and BUTTONS from the current
+    // SAFE_MARGIN. Called once at startup and again every time [ / ] change
+    // the margin, so all downstream positions (including hit-boxes used by
+    // pickStationButton) stay in sync with whatever's currently drawn.
+    function rebuildLayout() {
+      SAFE_RECT = {
+        x: HUD_CANVAS_W * SAFE_MARGIN,
+        y: HUD_CANVAS_H * SAFE_MARGIN,
+        w: HUD_CANVAS_W * (1 - 2 * SAFE_MARGIN),
+        h: HUD_CANVAS_H * (1 - 2 * SAFE_MARGIN),
+      };
+
+      // Layout matching the reference design: wave bar top-left, circular
+      // timer top-center, threat advisory top-right, targeting reticle +
+      // subject ID centered, ACTIONS list bottom-left, PERMIT/REJECT
+      // centered-bottom, AI ASSISTANT bottom-right.
+      LAYOUT = {
+        wave: frac(0.00, 0.00, 0.22, 0.09),
+        timerCircle: { cx: frac(0.5, 0.14, 0, 0).x, cy: frac(0, 0.14, 0, 0).y, r: 0.045 * SAFE_RECT.h },
+        // Threat advisory (scan box) sits directly above the AI assistant
+        // (confidence box) -- same size as before, just stacked so its
+        // bottom edge meets the confidence box's top edge.
+        threat: frac(0.72, 0.16, 0.28, 0.24),
+        viewport: frac(0.30, 0.16, 0.40, 0.36), // subject image "camera feed" window
+        reticleCy: frac(0, 0.34, 0, 0).y, // reticle sits mid-viewport
+        subjectLabelY: frac(0, 0.56, 0, 0).y,
+        actions: frac(0.00, 0.40, 0.20, 0.24),
+        permit: frac(0.36, 0.60, 0.12, 0.09),
+        reject: frac(0.50, 0.60, 0.12, 0.09),
+        ai: frac(0.72, 0.40, 0.28, 0.10),
+        exit: frac(0.90, 0.04, 0.10, 0.055),
+      };
+
+      // Button hit-boxes in canvas pixel space, matching LAYOUT above.
+      // `toggledWhen` highlights a button when active. ZOOM 1/2/3 are
+      // mutually-exclusive zoom-level rows stacked inside the ACTIONS panel.
+      actionsHeaderH = LAYOUT.actions.h * 0.18;
+      actionsRowH = (LAYOUT.actions.h - actionsHeaderH) / 3;
+      BUTTONS = [
+        { id: 'zoom1', label: 'ZOOM 1', ...actionsRow(0),
+          toggledWhen: (st) => st.zoomLevel === 1 },
+        { id: 'zoom2', label: 'ZOOM 2', ...actionsRow(1),
+          toggledWhen: (st) => st.zoomLevel === 2 },
+        { id: 'zoom3', label: 'ZOOM 3', ...actionsRow(2),
+          toggledWhen: (st) => st.zoomLevel === 3 },
+        { id: 'permit', label: 'PERMIT', ...LAYOUT.permit },
+        { id: 'reject', label: 'REJECT', ...LAYOUT.reject },
+        { id: 'exit', label: 'EXIT (ESC)', ...LAYOUT.exit },
+      ];
+    }
+    rebuildLayout();
+
+    // [ shrinks the safe area (pulls everything further from the edges,
+    // for when content still clips behind a border), ] grows it (for when
+    // there's too much dead space and the borders aren't actually that
+    // wide). Redraws immediately if a station is open so you see the
+    // effect live.
+    document.addEventListener('keydown', (event) => {
+      if (event.code !== 'BracketLeft' && event.code !== 'BracketRight') return;
+      const delta = event.code === 'BracketLeft' ? 0.01 : -0.01;
+      SAFE_MARGIN = Math.min(0.35, Math.max(0, SAFE_MARGIN + delta));
+      rebuildLayout();
+      showTemporaryMessage(`Safe margin: ${(SAFE_MARGIN * 100).toFixed(0)}% ( [ shrink / ] grow )`);
+      console.log(`SAFE_MARGIN = ${SAFE_MARGIN.toFixed(3)}`);
+      if (activeStationIndex !== -1) drawStationHUD(stations[activeStationIndex]);
+    });
+
+    // One Image object per URL, reused across rounds/redraws so we're not
+    // re-fetching every frame; onload triggers a redraw of whichever
+    // station is currently showing that image (in case it finishes
+    // loading after the round already started).
+    const subjectImageCache = new Map();
+    function getCachedSubjectImage(url) {
+      if (!subjectImageCache.has(url)) {
+        const img = new Image();
+        img.src = url;
+        img.onload = () => {
+          const st = stations[activeStationIndex];
+          if (st && st.currentRound && `data/game_sets/images/${st.currentRound.image}` === url) {
+            drawStationHUD(st);
+          }
+        };
+        img.onerror = () => showTemporaryMessage(`Image failed to load: ${url}`);
+        subjectImageCache.set(url, img);
+      }
+      return subjectImageCache.get(url);
+    }
+
+    function computeWaveNum(station) {
+      // This station's rounds only cover waves WAVE_START..WAVE_TOTAL (the
+      // rest of the siege is assumed to happen elsewhere). Scale
+      // roundIndex into that range based on the real round count so it
+      // never overflows past WAVE_TOTAL regardless of how many rounds a
+      // session actually has.
+      const wavesCovered = WAVE_TOTAL - WAVE_START + 1;
+      const roundsPerWave = ROUNDS.length / wavesCovered;
+      return Math.min(WAVE_TOTAL, WAVE_START + Math.floor(station.roundIndex / roundsPerWave));
+    }
+
+    let feedbackText = '';
+    let hoveredButtonId = null;
+    let hoverCanvasPos = null; // {x,y} in canvas space, drawn as a debug dot
+
+    // Redraws the entire on-mesh HUD for `station` and pushes it to the
+    // mesh via hudTexture.needsUpdate. Called after every state change
+    // (round start, timer tick, button press, hover change) rather than
+    // on a fixed schedule, so it's cheap in the common case.
+    function drawStationHUD(station) {
+      const ctx = hudCtx;
+      ctx.clearRect(0, 0, HUD_CANVAS_W, HUD_CANVAS_H);
+      ctx.fillStyle = '#04080c';
+      ctx.fillRect(0, 0, HUD_CANVAS_W, HUD_CANVAS_H);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high'; // sharper subject image, esp. when zoomed in
+
+      // Decorative tick ruler across the top of the safe area
+      ctx.strokeStyle = 'rgba(111,214,232,0.25)';
+      ctx.lineWidth = 1;
+      for (let x = SAFE_RECT.x; x <= SAFE_RECT.x + SAFE_RECT.w; x += 14) {
+        ctx.beginPath();
+        ctx.moveTo(x, SAFE_RECT.y);
+        ctx.lineTo(x, SAFE_RECT.y + 8);
+        ctx.stroke();
+      }
+
+      // Wave bar, top-left
+      const wave = LAYOUT.wave;
+      const waveFrac = computeWaveNum(station) / WAVE_TOTAL;
+      ctx.strokeStyle = 'rgba(111,214,232,0.3)';
+      ctx.strokeRect(wave.x, wave.y + 20, wave.w, 4);
+      ctx.fillStyle = '#6fd6e8';
+      ctx.fillRect(wave.x, wave.y + 20, wave.w * waveFrac, 4);
+      ctx.font = '15px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`WAVE: ${computeWaveNum(station)}/${WAVE_TOTAL}`, wave.x, wave.y + 45);
+
+      // Time remaining, top-center circular timer
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#6fd6e8';
+      ctx.font = '13px monospace';
+      ctx.fillText('TIME REMAINING', LAYOUT.timerCircle.cx, LAYOUT.timerCircle.cy - LAYOUT.timerCircle.r - 14);
+      ctx.strokeStyle = '#e8845a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(LAYOUT.timerCircle.cx, LAYOUT.timerCircle.cy, LAYOUT.timerCircle.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#e8845a';
+      ctx.font = '26px monospace';
+      ctx.fillText(String(Math.max(station.timeRemaining, 0)), LAYOUT.timerCircle.cx, LAYOUT.timerCircle.cy + 9);
+
+      // Threat advisory, top-right (human_ai condition only)
+      if (CONDITION === 'human_ai' && station.currentRound) {
+        const tp = LAYOUT.threat;
+        ctx.fillStyle = 'rgba(111,214,232,0.10)';
+        ctx.fillRect(tp.x, tp.y, tp.w, tp.h);
+        ctx.strokeStyle = '#6fd6e8';
+        ctx.strokeRect(tp.x, tp.y, tp.w, tp.h);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#6fd6e8';
+        ctx.font = '14px monospace';
+        ctx.fillText('THREAT ADVISORY', tp.x + 14, tp.y + 24);
+        // Advisory lines, each glossed in plain terms where the official
+        // wording is opaque, then the AI's explicit recommendation. Both are
+        // restatements of the CNN's real output (its verdict / says-human),
+        // never invented reasoning.
+        let ty = tp.y + 50;
+        station.currentRound.threats.forEach((t) => {
+          ctx.fillStyle = '#b9cdd4';
+          ctx.font = '13px monospace';
+          ctx.fillText(`- ${t}`, tp.x + 14, ty);
+          ty += 18;
+          const gloss = THREAT_GLOSS[t];
+          if (gloss) {
+            ctx.fillStyle = '#7d939b';
+            ctx.font = '11px monospace';
+            ctx.fillText(`  (${gloss})`, tp.x + 14, ty);
+            ty += 16;
+          }
+        });
+        // The AI's own verdict, restated as an explicit call plus its real
+        // confidence. When the classifier is torn (the "Ambiguous
+        // Classification" line above, top-2 gap < 0.25) it is only ~45%
+        // accurate, so the call is softened to LEANS and coloured amber
+        // rather than the decisive permit-cyan / reject-orange. The direction
+        // is still shown: withholding it entirely would remove any advice to
+        // agree or disagree with on exactly the trials where over-trust is
+        // measurable.
+        const saysHuman = station.currentRound.cnnSaysHuman;
+        const conf = Math.round(station.currentRound.aiConfidence);
+        const torn = station.currentRound.threats.includes('Ambiguous Classification');
+        ctx.fillStyle = torn ? '#e8c45a' : (saysHuman ? '#6fd6e8' : '#e8845a');
+        ctx.font = 'bold 13px monospace';
+        ctx.fillText(
+          `${torn ? 'AI LEANS' : 'AI RECOMMENDS'}: ${saysHuman ? 'PERMIT' : 'REJECT'} (${conf}%)`,
+          tp.x + 14, ty + 6
+        );
+      }
+
+      // Camera-feed viewport (subject image) with targeting reticle over it
+      const vp = LAYOUT.viewport;
+      ctx.strokeStyle = 'rgba(111,214,232,0.4)';
+      ctx.strokeRect(vp.x, vp.y, vp.w, vp.h);
+      if (station.currentRound) {
+        const url = `data/game_sets/images/${station.currentRound.image}`;
+        const img = getCachedSubjectImage(url);
+        if (img.complete && img.naturalWidth > 0) {
+          const zoomPad = ZOOM_PADS[station.zoomLevel] || 0;
+          const drawRect = {
+            x: vp.x - vp.w * zoomPad / 2, y: vp.y - vp.h * zoomPad / 2,
+            w: vp.w * (1 + zoomPad), h: vp.h * (1 + zoomPad),
+          };
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(vp.x, vp.y, vp.w, vp.h);
+          ctx.clip(); // keep a zoomed image from spilling outside the viewport frame
+          ctx.drawImage(img, drawRect.x, drawRect.y, drawRect.w, drawRect.h);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = '#0c1620';
+          ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
+          ctx.fillStyle = '#6fd6e8';
+          ctx.font = '16px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('LOADING...', vp.x + vp.w / 2, vp.y + vp.h / 2);
+        }
+      }
+      // Reticle: diamond + tick marks, centered in the viewport
+      const rcx = vp.x + vp.w / 2, rcy = LAYOUT.reticleCy;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 1.5;
+      const tick = 22, gap = 14, diamond = 7;
+      [[0, -1], [0, 1], [-1, 0], [1, 0]].forEach(([dx, dy]) => {
+        ctx.beginPath();
+        ctx.moveTo(rcx + dx * gap, rcy + dy * gap);
+        ctx.lineTo(rcx + dx * (gap + tick), rcy + dy * (gap + tick));
+        ctx.stroke();
+      });
+      ctx.save();
+      ctx.translate(rcx, rcy);
+      ctx.rotate(Math.PI / 4);
+      ctx.strokeRect(-diamond, -diamond, diamond * 2, diamond * 2);
+      ctx.restore();
+      ctx.lineWidth = 1;
+      // Subject label below the reticle. Shows the round NUMBER, never the
+      // filename/subjectId -- ids like "test_00074_tier2" would leak the
+      // malice tier (and tier0 = human, i.e. the answer) to the player. The
+      // real subjectId still goes to the trial log in recordAnswer().
+      if (station.currentRound) {
+        ctx.fillStyle = '#6fd6e8';
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`SUBJECT ${String(station.roundIndex + 1).padStart(2, '0')}`, rcx, LAYOUT.subjectLabelY);
+      }
+
+      // AI assistant panel, bottom-right (human_ai condition only)
+      if (CONDITION === 'human_ai' && station.currentRound) {
+        const ap = LAYOUT.ai;
+        ctx.fillStyle = 'rgba(111,214,232,0.10)';
+        ctx.fillRect(ap.x, ap.y, ap.w, ap.h);
+        ctx.strokeStyle = '#6fd6e8';
+        ctx.strokeRect(ap.x, ap.y, ap.w, ap.h);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#6fd6e8';
+        ctx.font = '14px monospace';
+        ctx.fillText('AI ASSISTANT', ap.x + 14, ap.y + 22);
+        const barX = ap.x + 60, barY = ap.y + 40, barW = ap.w - 130;
+        ctx.fillText('CONF', ap.x + 14, ap.y + 45);
+        ctx.strokeRect(barX, barY, barW, 6);
+        ctx.fillStyle = '#6fd6e8';
+        ctx.fillRect(barX, barY, barW * (station.currentRound.aiConfidence / 100), 6);
+        ctx.fillText(String(station.currentRound.aiConfidence), barX + barW + 10, barY + 6);
+      }
+
+      // ACTIONS panel, bottom-left (header + SCAN/ZOOM/AI ASSIST/FLAG rows)
+      const ac = LAYOUT.actions;
+      ctx.fillStyle = 'rgba(8,18,28,0.85)';
+      ctx.fillRect(ac.x, ac.y, ac.w, actionsHeaderH);
+      ctx.strokeStyle = '#6fd6e8';
+      ctx.strokeRect(ac.x, ac.y, ac.w, ac.h);
+      ctx.fillStyle = '#6fd6e8';
+      ctx.font = '13px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('ACTIONS', ac.x + ac.w / 2, ac.y + actionsHeaderH / 2 + 5);
+
+      // Action + decision buttons (SCAN/ZOOM/AI ASSIST/FLAG rows + PERMIT/REJECT + EXIT)
+      BUTTONS.forEach((btn) => {
+        const disabled = btn.disabledWhen && btn.disabledWhen(station);
+        const active = btn.toggledWhen && btn.toggledWhen(station);
+        const hovered = hoveredButtonId === btn.id && !disabled;
+        ctx.fillStyle = disabled
+          ? 'rgba(60,60,60,0.4)'
+          : active
+            ? 'rgba(111,214,232,0.30)'
+            : hovered
+              ? 'rgba(111,214,232,0.15)'
+              : 'rgba(8,18,28,0.85)';
+        ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+        ctx.strokeStyle = btn.id === 'reject' ? '#e8845a' : '#6fd6e8';
+        ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+        ctx.fillStyle = disabled ? '#5a6b70' : (btn.id === 'reject' ? '#e8845a' : '#6fd6e8');
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(btn.label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 5);
+      });
+      ctx.textAlign = 'left';
+
+      // Feedback line
+      if (feedbackText) {
+        ctx.fillStyle = '#6fd6e8';
+        ctx.font = '16px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(feedbackText, HUD_CANVAS_W / 2, SAFE_RECT.y + SAFE_RECT.h * 0.85);
+        ctx.textAlign = 'left';
+      }
+
+      // Debug hover marker -- confirms the cursor-to-canvas mapping is
+      // calibrated correctly; remove once you've verified the cursor lines
+      // up with the highlighted button.
+      if (hoverCanvasPos) {
+        ctx.beginPath();
+        ctx.arc(hoverCanvasPos.x, hoverCanvasPos.y, 6, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ff4444';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+
+      // Debug border guide -- yellow marks the full canvas edge (the true
+      // 0..1 UV extent), useful for seeing how much margin is dialed in.
+      ctx.strokeStyle = '#ffee55';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(1, 1, HUD_CANVAS_W - 2, HUD_CANVAS_H - 2);
+      ctx.lineWidth = 1;
+
+      hudTexture.needsUpdate = true;
+    }
+
+    function applyScreenTexture(station, url) {
+      if (!station.mesh) {
+        console.warn(`applyScreenTexture: station "${station.meshName}" has no resolved mesh yet.`);
+        return;
+      }
+      const texLoader = new THREE.TextureLoader();
+      texLoader.load(
+        url,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace; // match renderer.outputColorSpace, else it can render dark/washed out
+          const mat = Array.isArray(station.mesh.material) ? station.mesh.material[0] : station.mesh.material;
+          mat.map = tex;
+          mat.color.set(0xffffff);
+          // If this material supports emissive (MeshStandardMaterial /
+          // MeshPhysicalMaterial), the original screen was very likely
+          // self-lit that way -- setting only .map above makes it look
+          // dim/flat since it's now lit like ordinary scene geometry
+          // instead of glowing like a monitor. Push the same image onto
+          // emissiveMap too so it reads as bright again.
+          if ('emissiveMap' in mat) {
+            mat.emissiveMap = tex;
+            mat.emissive.set(0xffffff);
+            mat.emissiveIntensity = 1.0;
+          }
+          mat.needsUpdate = true;
+          console.log(`Texture applied to "${station.meshName}": ${url}`);
+        },
+        undefined,
+        (err) => {
+          // Previously silent: if the image 404s, the mesh just keeps
+          // showing whatever it already had, with zero indication why.
+          console.error(`Failed to load texture "${url}" for station "${station.meshName}":`, err);
+          showTemporaryMessage(`Image failed to load: ${url}`);
+        }
+      );
+    }
+
+    // Shows round 0's subject image on every resolved screen mesh as soon
+    // as both the map and rounds.json are ready -- this is PURELY visual,
+    // just so a walking player sees content on the screens. It does not
+    // start a timer, does not populate the 2D threat/AI/decision HUD, and
+    // does not touch station.roundIndex or station.results. Interaction
+    // (and the real, recorded round) still only begins once the player
+    // clicks the screen, via startRound()/activateStation() below.
+    function tryShowPassiveRounds() {
+      if (!mapLoaded || ROUNDS.length === 0) return;
+      const st = stations.find((s) => s.meshName === "screenMain");
+      if (!st) {
+        console.warn('tryShowPassiveRounds: no station configured with meshName "screenMain".');
+        return;
+      }
+      if (!st.mesh) {
+        console.warn('tryShowPassiveRounds: "screenMain" mesh was not found when the map loaded — check STATION_CONFIGS / the mesh name.');
+        return;
+      }
+      if (st.currentRound) return; // don't stomp a round already in progress
+      const previewRound = ROUNDS[0];
+      console.log("tryShowPassiveRounds: applying", previewRound.image, "to screenMain");
+      applyScreenTexture(st, `data/game_sets/images/${previewRound.image}`);
+    }
+
+    function startTimer(station) {
+      clearInterval(station.timerInterval);
+      station.timeRemaining = 45;
+      drawStationHUD(station);
+      station.timerInterval = setInterval(() => {
+        station.timeRemaining -= 1;
+        drawStationHUD(station);
+        if (station.timeRemaining <= 0) {
+          clearInterval(station.timerInterval);
+          recordAnswer(station, null);
+        }
+      }, 1000);
+    }
+
+    function startRound(station) {
+      if (station.roundIndex >= ROUNDS.length) {
+        feedbackText = `${station.meshName}: ALL ROUNDS COMPLETE — results exported`;
+        drawStationHUD(station);
+        console.log(`Final results for ${station.meshName}:`, station.results);
+        exportResultsCSV(station);
+        // End-of-game debrief. AI-assist players (first game only) take the
+        // POST survey first, and the debrief waits behind it (pendingEndStats,
+        // released on survey submit); everyone else sees it immediately.
+        const stats = computeStats(station);
+        if (CONDITION === 'human_ai'
+            && localStorage.getItem('post_survey_done_' + PARTICIPANT_ID) !== 'true') {
+          pendingEndStats = stats;
+          showSurvey('post');
+        } else {
+          showEndScreen(stats);
+        }
+        return;
+      }
+      station.currentRound = ROUNDS[station.roundIndex];
+      feedbackText = '';
+
+      station.zoomLevel = 0;
+
+      station.roundStartTime = performance.now();
+      startTimer(station); // also does the first drawStationHUD() call
+    }
+
+    function recordAnswer(station, saysHuman) {
+      if (!station.currentRound) return;
+      clearInterval(station.timerInterval);
+      const reactionMs = Math.round(performance.now() - station.roundStartTime);
+      const correct = saysHuman === station.currentRound.groundTruthIsHuman;
+
+      const entry = {
+        participant_id: PARTICIPANT_ID,
+        prev_participant_id: PREV_PARTICIPANT_ID,
+        session_id: SESSION_ID,
+        content_session_key: CONTENT_SESSION_KEY,
+        play_count: PLAY_COUNT,
+        station: station.meshName,
+        condition: CONDITION,
+        subject: station.currentRound.subjectId,
+        tier: station.currentRound.tier,
+        round_index: station.roundIndex,
+        ground_truth_human: station.currentRound.groundTruthIsHuman,
+        player_answer_human: saysHuman,
+        correct: saysHuman === null ? null : correct,
+        ai_confidence_shown: station.currentRound.aiConfidence,
+        cnn_says_human: station.currentRound.cnnSaysHuman,
+        reaction_time_ms: reactionMs,
+        // SCAN/AI ASSIST/FLAG buttons were removed -- the threat advisory
+        // and AI confidence panels are now shown automatically whenever the
+        // human_ai condition applies (see drawStationHUD), so `scanned`/
+        // `ai_assist_used` just record that fact rather than a click.
+        scanned: CONDITION === 'human_ai',
+        zoom_level: station.zoomLevel,
+        ai_assist_used: CONDITION === 'human_ai',
+        ai_assist_time_ms: CONDITION === 'human_ai' ? 0 : null,
+        flagged: false,
+        timestamp: new Date().toISOString(),
+      };
+      station.results.push(entry);
+      // Consume the round so a second decision (double-click, or a button
+      // press racing the 45s auto-timeout) can't log it twice; startRound
+      // sets currentRound again for the next round.
+      station.currentRound = null;
+
+      feedbackText = saysHuman === null ? 'TIMED OUT — NO DECISION' : 'DECISION LOGGED';
+      drawStationHUD(station);
+      console.log('Round result:', entry);
+
+      station.roundIndex += 1;
+      setTimeout(() => {
+        if (activeStationIndex === station.index) startRound(station);
+      }, 700);
+    }
+
+    function exportResultsCSV(station) {
+      if (!station.results.length) return;
+      const headers = [
+        'participant_id', 'prev_participant_id', 'session_id', 'content_session_key', 'play_count',
+        'station', 'subject_id', 'malice_tier', 'round_index', 'condition',
+        'ground_truth_human', 'player_answer_human', 'correct',
+        'ai_confidence_shown', 'cnn_says_human', 'reaction_time_ms', 'scanned', 'zoom_level',
+        'ai_assist_used', 'ai_assist_time_ms', 'flagged', 'timestamp',
+      ];
+      const rows = station.results.map((r) => [
+        r.participant_id, r.prev_participant_id, r.session_id, r.content_session_key, r.play_count,
+        r.station, r.subject, r.tier, r.round_index, r.condition,
+        r.ground_truth_human, r.player_answer_human, r.correct,
+        r.ai_confidence_shown, r.cnn_says_human, r.reaction_time_ms, r.scanned, r.zoom_level,
+        r.ai_assist_used, r.ai_assist_time_ms, r.flagged, r.timestamp,
+      ]);
+
+      sendToServer('trials', headers, rows);   // POST to our Sheet (backup: the download below)
+
+      const csv = [headers, ...rows]
+        .map((row) => row.map((v) => (v === null || v === undefined) ? '' : v).join(','))
+        .join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `trial-results-${station.meshName}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    // Button actions. PERMIT = "let them through the checkpoint", i.e. the
+    // player judges the subject a healthy human (saysHuman = true). REJECT =
+    // "turn them away", i.e. a disguised survivor (saysHuman = false). This
+    // matches ground_truth_human, which is true only for the tier-0 real
+    // humans. recordAnswer() handles correctness scoring, logging, advancing
+    // to the next round, and CSV export on the final round.
+    //
+    // Called from handleStationClick() below once a raycast + UV lookup has
+    // already determined which on-screen button (if any) was clicked.
+    function handleButtonClick(id, station) {
+      const btn = BUTTONS.find((b) => b.id === id);
+      if (btn && btn.disabledWhen && btn.disabledWhen(station)) return;
+      switch (id) {
+        case 'zoom1':
+          station.zoomLevel = station.zoomLevel === 1 ? 0 : 1;
+          break;
+        case 'zoom2':
+          station.zoomLevel = station.zoomLevel === 2 ? 0 : 2;
+          break;
+        case 'zoom3':
+          station.zoomLevel = station.zoomLevel === 3 ? 0 : 3;
+          break;
+        case 'permit':
+          if (station.currentRound) recordAnswer(station, true);
+          return; // recordAnswer already redraws
+        case 'reject':
+          if (station.currentRound) recordAnswer(station, false);
+          return; // recordAnswer already redraws
+        case 'exit':
+          deactivateStation();
+          return; // station is gone, nothing left to redraw
+      }
+      drawStationHUD(station);
+    }
+
+    // ============================================================
+    // ACTIVATION: the HUD no longer opens automatically on proximity —
+    // the player must click directly on a screen mesh while walking
+    // around (pointer-locked). Walking close just shows a text prompt;
+    // clicking is what actually opens the station and starts its round.
+    // Exiting is explicit too (the EXIT button or Escape), not walking
+    // away, since there's no longer a continuous distance check driving
+    // it either way.
+    // ============================================================
+    const INTERACT_RANGE = 6; // a bit more forgiving than the old auto-trigger radius
+
+    // Swaps a station mesh's material texture to the shared HUD canvas
+    // texture (used while the station is open) or back to a plain photo
+    // texture (used for the ambient walk-by preview and after closing).
+    function setStationMaterialTexture(station, texture) {
+      if (!station.mesh) return;
+      const mat = Array.isArray(station.mesh.material) ? station.mesh.material[0] : station.mesh.material;
+      mat.map = texture;
+      mat.color.set(0xffffff);
+      if ('emissiveMap' in mat) {
+        mat.emissiveMap = texture;
+        mat.emissive.set(0xffffff);
+        mat.emissiveIntensity = 1.0;
+      }
+      mat.needsUpdate = true;
+    }
+
+    // Tracks the real mouse position (as normalized device coords) while a
+    // station is open and the pointer is unlocked, so pickStationButton()
+    // can raycast from wherever the actual cursor is instead of always the
+    // screen center. Only updated while a station is active -- while
+    // walking around (pointer locked) clientX/Y don't move meaningfully,
+    // so aiming still uses the crosshair (screen center) for opening a
+    // screen in the first place.
+    const mouseNDC = new THREE.Vector2(0, 0);
+    document.addEventListener('mousemove', (event) => {
+      if (activeStationIndex === -1) return;
+      mouseNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouseNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    });
+    const crosshairEl = document.getElementById('crosshair');
+
+    function activateStation(index) {
+      activeStationIndex = index;
+      const st = stations[index];
+      console.log(`Station activated: "${st.meshName}" (condition: ${CONDITION})`);
+      walkPrompt.classList.add('hidden');
+      // Free the cursor so the real mouse position can be used to aim at
+      // on-screen buttons -- see pickStationButton()'s use of mouseNDC.
+      // The crosshair dot is hidden since it no longer reflects where a
+      // click will land once the pointer is unlocked.
+      controls.unlock();
+      crosshairEl.style.display = 'none';
+      setStationMaterialTexture(st, hudTexture);
+      if (ROUNDS.length > 0) {
+        st.roundIndex = 0; // fresh run each time you open a screen
+        startRound(st);
+      } else {
+        drawStationHUD(st); // still show something (e.g. "no rounds loaded") if data hasn't arrived yet
+      }
+    }
+
+    function deactivateStation() {
+      if (activeStationIndex === -1) return;
+      const st = stations[activeStationIndex];
+      clearInterval(st.timerInterval);
+      st.currentRound = null; // no live round while walking
+      hoveredButtonId = null;
+      hoverCanvasPos = null;
+      activeStationIndex = -1;
+      crosshairEl.style.display = '';
+      // Restore the ambient preview image instead of leaving the HUD
+      // canvas showing on the mesh while the player just walks past it.
+      if (ROUNDS.length > 0) {
+        applyScreenTexture(st, `data/game_sets/images/${ROUNDS[0].image}`);
+      }
+      controls.lock(); // automatically re-lock so walking resumes immediately, no need to click the overlay again
+    }
+
+    document.addEventListener('keydown', (event) => {
+      if (event.code === 'Escape' && activeStationIndex !== -1) {
+        deactivateStation();
+      }
+    });
+
+    // Raycasts from wherever the real mouse cursor is (mouseNDC, since the
+    // pointer unlocks the moment a station opens) onto that station's mesh,
+    // converts the hit UV to a canvas pixel position, and returns the
+    // button whose rect contains that point (or null). Shared by both the
+    // per-frame hover check and the actual click handler so they can never
+    // disagree about what's under the cursor.
+    function pickStationButton(station) {
+      if (!station.mesh) return { button: null, canvasPos: null };
+      raycaster.setFromCamera(mouseNDC, camera);
+      raycaster.far = 650;
+      const hits = raycaster.intersectObject(station.mesh, false);
+      if (hits.length === 0 || !hits[0].uv) return { button: null, canvasPos: null };
+      // Standard WebGL-texture convention (flipY on by default): UV (0,0)
+      // is the bottom-left texel of the source canvas, UV (1,1) the
+      // top-right. If clicks land on the wrong button, this is the first
+      // place to check -- flip the (1 - uv.y) to uv.y instead and see if
+      // the debug hover dot (drawn in drawStationHUD) starts tracking your
+      // cursor correctly.
+      const canvasPos = {
+        x: hits[0].uv.x * HUD_CANVAS_W,
+        y: (1 - hits[0].uv.y) * HUD_CANVAS_H,
+      };
+      const button = BUTTONS.find(
+        (b) => canvasPos.x >= b.x && canvasPos.x <= b.x + b.w &&
+               canvasPos.y >= b.y && canvasPos.y <= b.y + b.h
+      );
+      return { button: button || null, canvasPos };
+    }
+
+    function handleStationClick() {
+      const station = stations[activeStationIndex];
+      if (!station) return;
+      const { button } = pickStationButton(station);
+      if (!button) {
+        showTemporaryMessage("Click a button on the screen to use it");
+        return;
+      }
+      handleButtonClick(button.id, station);
+    }
+
+    // Click-to-interact: only fires while walking around (pointer locked)
+    // and no screen is currently open, so it can't fight with clicks on
+    // the HUD's own buttons.
+    // Attached to document, NOT renderer.domElement -- under Pointer Lock,
+    // click events target document.body (whatever PointerLockControls was
+    // constructed with), and since <canvas> is a CHILD of <body>, not an
+    // ancestor, a listener on the canvas itself would never receive a
+    // click event whose target is <body>. Confirmed via the click-debug
+    // logger above (target was consistently <body>).
+    document.addEventListener('click', () => {
+      if (activeStationIndex !== -1) {
+        handleStationClick();
+        return;
+      }
+      if (!controls.isLocked) {
+        // Clicking only opens a screen while you're in walk-around mode
+        // (pointer locked). If you're seeing this message, that's why
+        // nothing happened -- click the "Click to start" overlay first
+        // (or press somewhere to re-lock) so isLocked becomes true, then
+        // click the screen again.
+        showTemporaryMessage("Not locked — click 'Click to start' first, then click the screen");
+        console.log("Click ignored: controls.isLocked is false");
+        return;
+      }
+
+      // Raycast at full range first (same as the "M" debug key) so we can
+      // tell the difference between "too far" and "not a screen" instead
+      // of silently doing nothing when nothing falls inside INTERACT_RANGE.
+      raycaster.setFromCamera(centerScreen, camera);
+      raycaster.far = 650;
+      const hits = raycaster.intersectObjects(collidables, false);
+      if (hits.length === 0) {
+        showTemporaryMessage("Nothing there");
+        return;
+      }
+
+      const hit = hits[0];
+      const stationIndex = stations.findIndex((s) => s.mesh === hit.object);
+      if (stationIndex === -1) {
+        showTemporaryMessage("That's not a screen");
+        return;
+      }
+      if (hit.distance > INTERACT_RANGE) {
+        showTemporaryMessage(`Get closer to the screen (${hit.distance.toFixed(1)}m away)`);
+        return;
+      }
+      activateStation(stationIndex);
+    });
+
+    // Purely cosmetic: show "click to inspect" only while near a screen
+    // and nothing is open yet. Doesn't open anything by itself.
+    function updateWalkPrompt() {
+      if (activeStationIndex !== -1) {
+        walkPrompt.classList.add('hidden');
+        return;
+      }
+      const nearAny = stations.some(
+        (st) => st.mesh && camera.position.distanceTo(st.position) < INTERACT_RANGE
+      );
+      walkPrompt.classList.toggle('hidden', !nearAny);
+    }
+
+    // ============================================================
+    // ANIMATION
+    // ============================================================
+    const clock = new THREE.Clock();
+    let frameCount = 0;
+    let lastStatusUpdate = 0;
+    // Ground state lives outside animate() so the every-other-frame cache below
+    // actually persists between frames. Declaring these inside the loop made the
+    // ternary reference them before initialization (temporal dead zone), which
+    // threw on every odd frame and skipped the rest of that frame -- including
+    // gravity, the ground snap, and the render call.
+    let groundY = null;
+    let grounded = false;
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = Math.min(clock.getDelta(), 0.05);
+      frameCount++;
+
+      if (controls.isLocked) {
+        let horizontal = 0, forward = 0;
+        if (keys.right) horizontal += 1;
+        if (keys.left) horizontal -= 1;
+        if (keys.forward) forward += 1;
+        if (keys.backward) forward -= 1;
+
+        const length = Math.hypot(horizontal, forward);
+        if (length > 0) {
+          horizontal /= length;
+          forward /= length;
+
+          tryMove(
+            horizontal * PLAYER.moveSpeed * delta,
+            forward * PLAYER.moveSpeed * delta
+          );
+        }
+
+        const feetY = camera.position.y - PLAYER.eyeHeight;
+        // Cache ground check every other frame
+        if (frameCount % 2 === 0 || !grounded) {
+          groundY = findGroundHeight(camera.position.x, feetY, camera.position.z);
+        }
+        grounded = groundY !== null && feetY <= groundY + 0.05 && verticalVelocity <= 0;
+
+        if (grounded) {
+          verticalVelocity = 0;
+          camera.position.y = groundY + PLAYER.eyeHeight;
+          if (wantsJump) {
+            verticalVelocity = PLAYER.jumpSpeed;
+            wantsJump = false;
+          }
+        } else {
+          verticalVelocity += PLAYER.gravity * delta;
+          camera.position.y += verticalVelocity * delta;
+        }
+
+        respawnIfFallen();
+      }
+
+      // While a station is open, keep tracking which on-screen button (if
+      // any) the crosshair is currently over, and only redraw the HUD
+      // canvas when that actually changes -- avoids a full canvas redraw
+      // every single frame just for a static hover state.
+      if (activeStationIndex !== -1) {
+        const st = stations[activeStationIndex];
+        const { button, canvasPos } = pickStationButton(st);
+        const newHoverId = button ? button.id : null;
+        const posChanged = (!hoverCanvasPos && canvasPos) || (hoverCanvasPos && !canvasPos) ||
+          (hoverCanvasPos && canvasPos && (Math.abs(hoverCanvasPos.x - canvasPos.x) > 2 || Math.abs(hoverCanvasPos.y - canvasPos.y) > 2));
+        if (newHoverId !== hoveredButtonId || posChanged) {
+          hoveredButtonId = newHoverId;
+          hoverCanvasPos = canvasPos;
+          drawStationHUD(st);
+        }
+      }
+
+      updateWalkPrompt(); // just toggles the "click to inspect" hint; opening now requires an actual click
+      updateStatus();
+      composer.render();
+    }
+
+    loadRounds().then(() => {
+      tryShowPassiveRounds();
+      animate();
+    });
+
+    // ============================================================
+    // RESIZE
+    // ============================================================
+    window.addEventListener("resize", () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      composer.setSize(width, height);
+      bloomPass.setSize(width, height);
+    });
+  </script>
+</body>
+</html>
